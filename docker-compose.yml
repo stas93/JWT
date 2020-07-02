@@ -1,0 +1,66 @@
+version: '3.3'
+services:
+  go-docker-image:
+    build: ./
+    ports:
+      - '8383:80'
+    volumes:
+      - ./:/app
+    depends_on:
+      - db
+      - db2
+      - db3
+    networks:
+      - api-net
+  db:
+    image: mongo:latest
+    expose:
+      - '27017'
+    container_name: 'mongo'
+    ports:
+      - "27017:27017"
+    networks:
+      - api-net
+    volumes:
+      - ./db/data-one:/data/db
+      - ./db/one/mongod.conf:/etc/mongod.conf
+    command:
+      - '-f'
+      - '/etc/mongod.conf'
+    depends_on:
+      - db2
+      - db3
+  db2:
+    image: mongo:latest
+    expose:
+      - '27018'
+    container_name: 'mongo2'
+    ports:
+      - "27018:27018"
+    networks:
+      - api-net
+    volumes:
+      - ./db/data-two:/data/db
+      - ./db/two/mongod.conf:/etc/mongod.conf
+    command:
+      - '-f'
+      - '/etc/mongod.conf'
+  db3:
+    image: mongo:latest
+    expose:
+      - '27019'
+    container_name: 'mongo3'
+    ports:
+      - "27019:27019"
+    networks:
+      - api-net
+    volumes:
+      - ./db/data-three:/data/db
+      - ./db/three/mongod.conf:/etc/mongod.conf
+    command:
+      - '-f'
+      - '/etc/mongod.conf'
+
+networks:
+  api-net:
+    driver: bridge
