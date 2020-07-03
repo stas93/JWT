@@ -176,5 +176,5 @@ func makeTokenResetHash(t string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return string(TokenResetHash), nil
+	return fmt.Sprintf("%x", TokenResetHash), nil
 }
