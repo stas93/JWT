@@ -144,6 +144,7 @@ func UpdateByTokenReset(TokenReset string, secret string) (*AuthTokens, error) {
 		if one.DeletedCount == 0 {
 			return errors.New("bad token")
 		}
+		// TODO other logic
 
 		return
 	})
