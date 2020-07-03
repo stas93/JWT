@@ -114,7 +114,7 @@ func CreateTokens(userId, secret string) (*AuthTokens, error) {
 	}
 	authTokens.TokenReset = GetDefaultEncoder(rb)
 	// insert in mongo
-	if authTokens.InsertTokenReset() != nil {
+	if err := authTokens.InsertTokenReset(); err != nil {
 		return nil, err
 	}
 	return authTokens, nil
@@ -128,7 +128,7 @@ func UpdateByTokenReset(TokenReset string, secret string) (*AuthTokens, error) {
 		defer func() {
 			if err != nil {
 				sessionContext.AbortTransaction(sessionContext)
-			}else {
+			} else {
 				sessionContext.CommitTransaction(sessionContext)
 			}
 		}()
