@@ -46,24 +46,64 @@ func init() {
 	col = db.Collection("usersToken")
 	fmt.Println("Connect to db: " + db.Name() + " Connect to col: " + col.Name())
 }
-func HandleGenerate(w http.ResponseWriter, r *http.Request) {
+func main() {
+	http.HandleFunc("/generate", MiddleJS(HandleGenerate))
+	http.HandleFunc("/selectall", MiddleJS(HandleSelectAll))
+	//http.HandleFunc("/refresh", HandleRefresh)
+	log.Fatal(http.ListenAndServe(":80", nil))
+}
+
+// middle
+func MiddleJS(next func(writer http.ResponseWriter, request *http.Request) (interface{}, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		res, err := next(w, r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		} else {
+			js, err := json.Marshal(res)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(js)
+		}
+	}
+}
+
+// Handle
+func HandleGenerate(w http.ResponseWriter, r *http.Request) (interface{}, error) {
 	userId := r.URL.Query().Get("GUID")
 	if userId == "" {
-		http.Error(w, "user id need", http.StatusBadRequest)
-		return
+		return nil, errors.New("user id need")
 	}
-	authTokens, err := CreateTokens(userId, SECRET_TOCKEN_ACCECC)
+	return CreateTokens(userId, SECRET_TOCKEN_ACCECC)
+}
+func HandleSelectAll(w http.ResponseWriter, r *http.Request) (interface{}, error) {
+	options := options.Find()
+	limit := 600
+	options.SetLimit(int64(limit))
+	filters := bson.M{}
+	cur, err := col.Find(ctx, filters)
 	if err != nil {
-		http.Error(w, "err when created tokens", http.StatusInternalServerError)
-		return
+		log.Fatal(err)
 	}
-	jData, err := json.Marshal(authTokens)
-	if err != nil {
-		http.Error(w, "err when created tokens", http.StatusInternalServerError)
-		return
+	result := make([]interface{}, 0, limit)
+	for cur.Next(ctx) {
+		var el interface{}
+		err := cur.Decode(&el)
+		if err != nil {
+			fmt.Println(err)
+		}
+		result = append(result, el)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(jData)
+	if err := cur.Err(); err != nil {
+		log.Fatal(err)
+	}
+
+	// Close the cursor once finished
+	cur.Close(context.TODO())
+	return result, nil
 }
 func HandleRefresh(w http.ResponseWriter, r *http.Request) {
 	userId := r.URL.Query().Get("GUID")
@@ -85,39 +125,61 @@ func HandleRefresh(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(jData)
 }
-func main() {
-	http.HandleFunc("/generate", HandleGenerate)
-	http.HandleFunc("/refresh", HandleRefresh)
-	log.Fatal(http.ListenAndServe(":80", nil))
-}
 
+// Model
 func GetDefaultEncoder(b []byte) string {
 	return base64.URLEncoding.EncodeToString(b)
 }
 func CreateTokens(userId, secret string) (*AuthTokens, error) {
-	authTokens := new(AuthTokens)
-	tmpHeader := GetDefaultEncoder([]byte(`{"alg":"HS512","typ":"JWT"}`))
-	//TODO REMOVE " in userId
-	payload := GetDefaultEncoder([]byte(`{"userId":"` + userId + `"}`))
-	tmpHeaderANDpayload := tmpHeader + "." + payload
-
-	h := hmac.New(sha512.New, []byte(secret))
-	h.Write([]byte(tmpHeaderANDpayload))
-
-	authTokens.Guid = userId
-	authTokens.TokenAccess = tmpHeaderANDpayload + "." + GetDefaultEncoder(h.Sum(nil))
-	//TODO make function isNonExistTokenReset
-	rb := make([]byte, 50)
-	_, err := rand.Read(rb)
-	if err != nil {
+	authTokens := &AuthTokens{Guid: userId}
+	authTokens.TokenAccessGenerate(secret)
+	if err := authTokens.TokenResetGenerate(); err != nil {
 		return nil, err
 	}
-	authTokens.TokenReset = GetDefaultEncoder(rb)
-	// insert in mongo
 	if err := authTokens.InsertTokenReset(); err != nil {
 		return nil, err
 	}
 	return authTokens, nil
+}
+func (t *AuthTokens) TokenResetGenerate() error {
+	//TODO make function isNonExistTokenReset
+	rb := make([]byte, 50)
+	_, err := rand.Read(rb)
+	if err != nil {
+		return err
+	}
+	t.TokenReset = GetDefaultEncoder(rb)
+	return nil
+}
+func (t *AuthTokens) TokenAccessGenerate(secret string) {
+	tmpHeader := GetDefaultEncoder([]byte(`{"alg":"HS512","typ":"JWT"}`))
+	//will think userId is ok
+	payload := GetDefaultEncoder([]byte(`{"userId":"` + t.Guid + `"}`))
+	tmpHeaderANDpayload := tmpHeader + "." + payload
+	h := hmac.New(sha512.New, []byte(secret))
+	h.Write([]byte(tmpHeaderANDpayload))
+	t.TokenAccess = tmpHeaderANDpayload + "." + GetDefaultEncoder(h.Sum(nil))
+}
+func (t *AuthTokens) InsertTokenReset() error {
+	TokenResetHash, err := makeTokenResetHash(t.TokenReset)
+	if err != nil {
+		return err
+	}
+	err = db.Client().UseSession(ctx, func(sessionContext mongo.SessionContext) error {
+		err := sessionContext.StartTransaction()
+		if err != nil {
+			fmt.Println(err)
+			return err
+		}
+		_, err = col.InsertOne(sessionContext, bson.M{"guid": t.Guid, "TokenReset": TokenResetHash})
+		if err != nil {
+			sessionContext.AbortTransaction(sessionContext)
+			fmt.Println(err)
+			return err
+		}
+		return sessionContext.CommitTransaction(sessionContext)
+	})
+	return err
 }
 func UpdateByTokenReset(TokenReset string, secret string) (*AuthTokens, error) {
 	TokenResetHash, err := makeTokenResetHash(TokenReset)
@@ -150,29 +212,9 @@ func UpdateByTokenReset(TokenReset string, secret string) (*AuthTokens, error) {
 	})
 	return nil, err
 }
-func (t *AuthTokens) InsertTokenReset() error {
-	TokenResetHash, err := makeTokenResetHash(t.TokenReset)
-	if err != nil {
-		return err
-	}
-	err = db.Client().UseSession(ctx, func(sessionContext mongo.SessionContext) error {
-		err := sessionContext.StartTransaction()
-		if err != nil {
-			fmt.Println(err)
-			return err
-		}
-		_, err = col.InsertOne(sessionContext, bson.M{"guid": t.Guid, TokenResetField: TokenResetHash})
-		if err != nil {
-			sessionContext.AbortTransaction(sessionContext)
-			fmt.Println(err)
-			return err
-		}
-		return sessionContext.CommitTransaction(sessionContext)
-	})
-	return err
-}
+
 func makeTokenResetHash(t string) (string, error) {
-	TokenResetHash, err := bcrypt.GenerateFromPassword([]byte(t), 20)
+	TokenResetHash, err := bcrypt.GenerateFromPassword([]byte(t), bcrypt.DefaultCost)
 	if err != nil {
 		return "", err
 	}
